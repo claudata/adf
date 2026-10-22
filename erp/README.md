@@ -18,6 +18,8 @@ Implemented:
   pipeline with bounded concurrency.
 - Server-provided `@odata.nextLink` pagination, fixed-interval activity retries,
   and run-specific JSON output paths.
+- A small-file validation pipeline that reads output metadata and JSON through
+  the private runtime without enabling public storage access.
 
 Not implemented:
 
@@ -135,9 +137,12 @@ new application credential if secure storage is not confirmed. Rotate before
 expiration; after verifying a replacement, retire its superseded app credential.
 Do not run concurrent rotations.
 
-Inside the sandbox, open **Microsoft Entra applications**, add the client ID,
-enable it, and assign the minimum read permissions required by the chosen APIs,
-scoped to the intended company. Do not assign SUPER. The admin center's similarly
+Inside the sandbox, open **Microsoft Entra applications** and add the client ID.
+Keep State **Disabled** while editing User Permission Sets, assign the minimum
+read permissions required by the chosen APIs, and set Company explicitly to the
+intended demonstration company. `D365 READ` scoped to `CRONUS USA, Inc.` was used
+for the customer extraction test. Save, then set State to **Enabled**. Do not
+assign SUPER or leave Company blank unintentionally. The admin center's similarly
 named app page does not replace sandbox-side data authorization.
 
 ## 3. Deploy the pipelines
@@ -161,11 +166,18 @@ Key Vault. Its fixed base URL targets the specified tenant and environment.
 ## 4. Run the first extraction
 
 In ADF Studio, run `pl-discover-companies`. Its `ReadCompanies` activity returns
-company IDs and names after copying them into:
+raw response envelopes after copying them into:
 
 ```text
 raw/business-central/company-discovery/<run-id>/companies.json
 ```
+
+The Lookup output's `value` array contains response envelopes; each envelope has
+its own `value` array containing company IDs and names. Flatten those inner
+arrays and confirm that the intended company is present. Discovery fails with
+`EmptyCompanyDiscovery` if every response envelope has an empty company list.
+Check the enabled application's company-scoped BC permissions before assuming
+that the sandbox lacks data; Entra API consent alone is insufficient.
 
 Select the demonstration company, then run `pl-extract-entity-full` with:
 
@@ -213,6 +225,36 @@ For multiple explicitly selected entities, run `pl-extract-batch-full` with:
 The batch pipeline starts at most two child extractions concurrently.
 `apiPath` may target an already installed custom API, but this repository does
 not create or publish an AL extension.
+
+Run `pl-validate-raw-json` with `folderPath` pointing to a successful extraction's
+directory relative to `raw`, and `fileName` set to `response-pages.json`. Its
+`InspectFile` activity returns existence, size, and modification time.
+`ReadRawFile` reads the actual stored JSON through `PrivateAzureIR`. Lookup is
+limited to 5,000 rows and 4 MB, so this is intended only for small demonstration
+files, not production-scale validation.
+
+To test pagination, compare the complete unique customer ID sets from a
+page-size-2 extraction and a page-size-1000 baseline, verify there are no
+duplicates, and inspect page continuations and the final response. A pipeline
+success status or copied-byte count alone does not establish completeness.
+
+Dataset and linked-service identifiers use underscores. A hyphenated dataset
+identifier produced an invalid generated runtime expression during live testing,
+even though ARM deployment validation succeeded.
+
+### Demonstration validation
+
+Live customer tests against a CRONUS demonstration company returned five unique
+customer IDs. A page-size-1000 baseline produced one response envelope; both
+page-size-2 direct and metadata-driven batch runs produced three. Private-runtime
+readback confirmed nonempty JSON files and identical complete customer ID sets,
+without duplicates. Authorized discovery passed, while replaying an actual empty
+company response failed with `EmptyCompanyDiscovery` as intended.
+
+These are small-sample full-load results, not a production-scale or
+incremental-processing certification. Other entities and injected throttling
+failures were not tested. Live environment identifiers and raw evidence are not
+published in this repository.
 
 ## Next implementation phase
 

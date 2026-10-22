@@ -26,7 +26,7 @@
     {
       "type": "Microsoft.DataFactory/factories/linkedservices",
       "apiVersion": "2018-06-01",
-      "name": "[concat(parameters('factoryName'), '/ls-key-vault')]",
+      "name": "[concat(parameters('factoryName'), '/ls_key_vault')]",
       "properties": {
         "type": "AzureKeyVault",
         "typeProperties": {
@@ -41,9 +41,9 @@
     {
       "type": "Microsoft.DataFactory/factories/linkedservices",
       "apiVersion": "2018-06-01",
-      "name": "[concat(parameters('factoryName'), '/ls-business-central')]",
+      "name": "[concat(parameters('factoryName'), '/ls_business_central')]",
       "dependsOn": [
-        "[resourceId('Microsoft.DataFactory/factories/linkedservices', parameters('factoryName'), 'ls-key-vault')]"
+        "[resourceId('Microsoft.DataFactory/factories/linkedservices', parameters('factoryName'), 'ls_key_vault')]"
       ],
       "properties": {
         "type": "RestService",
@@ -56,7 +56,7 @@
           "servicePrincipalKey": {
             "type": "AzureKeyVaultSecret",
             "store": {
-              "referenceName": "ls-key-vault",
+              "referenceName": "ls_key_vault",
               "type": "LinkedServiceReference"
             },
             "secretName": "bc-extraction-client-secret"
@@ -73,7 +73,7 @@
     {
       "type": "Microsoft.DataFactory/factories/linkedservices",
       "apiVersion": "2018-06-01",
-      "name": "[concat(parameters('factoryName'), '/ls-adls-gen2')]",
+      "name": "[concat(parameters('factoryName'), '/ls_adls_gen2')]",
       "properties": {
         "type": "AzureBlobFS",
         "typeProperties": {
@@ -88,13 +88,13 @@
     {
       "type": "Microsoft.DataFactory/factories/datasets",
       "apiVersion": "2018-06-01",
-      "name": "[concat(parameters('factoryName'), '/ds-bc-rest')]",
+      "name": "[concat(parameters('factoryName'), '/ds_bc_rest')]",
       "dependsOn": [
-        "[resourceId('Microsoft.DataFactory/factories/linkedservices', parameters('factoryName'), 'ls-business-central')]"
+        "[resourceId('Microsoft.DataFactory/factories/linkedservices', parameters('factoryName'), 'ls_business_central')]"
       ],
       "properties": {
         "linkedServiceName": {
-          "referenceName": "ls-business-central",
+          "referenceName": "ls_business_central",
           "type": "LinkedServiceReference"
         },
         "parameters": {
@@ -115,13 +115,13 @@
     {
       "type": "Microsoft.DataFactory/factories/datasets",
       "apiVersion": "2018-06-01",
-      "name": "[concat(parameters('factoryName'), '/ds-raw-json')]",
+      "name": "[concat(parameters('factoryName'), '/ds_raw_json')]",
       "dependsOn": [
-        "[resourceId('Microsoft.DataFactory/factories/linkedservices', parameters('factoryName'), 'ls-adls-gen2')]"
+        "[resourceId('Microsoft.DataFactory/factories/linkedservices', parameters('factoryName'), 'ls_adls_gen2')]"
       ],
       "properties": {
         "linkedServiceName": {
-          "referenceName": "ls-adls-gen2",
+          "referenceName": "ls_adls_gen2",
           "type": "LinkedServiceReference"
         },
         "parameters": {
@@ -156,11 +156,11 @@
       "apiVersion": "2018-06-01",
       "name": "[concat(parameters('factoryName'), '/pl-discover-companies')]",
       "dependsOn": [
-        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds-bc-rest')]",
-        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds-raw-json')]"
+        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds_bc_rest')]",
+        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds_raw_json')]"
       ],
       "properties": {
-        "description": "Copies paginated company IDs and names into a run-specific discovery file, then returns them through Lookup.",
+        "description": "Preserves paginated company response envelopes, reads them through Lookup, and fails explicitly if no companies are authorized. Companies are nested in each envelope's value array.",
         "concurrency": 1,
         "activities": [
           {
@@ -196,41 +196,11 @@
                   "type": "JsonWriteSettings",
                   "filePattern": "arrayOfObjects"
                 }
-              },
-              "translator": {
-                "type": "TabularTranslator",
-                "collectionReference": "$['value']",
-                "mappings": [
-                  {
-                    "source": {
-                      "path": "['id']"
-                    },
-                    "sink": {
-                      "path": "['id']"
-                    }
-                  },
-                  {
-                    "source": {
-                      "path": "['name']"
-                    },
-                    "sink": {
-                      "path": "['name']"
-                    }
-                  },
-                  {
-                    "source": {
-                      "path": "['displayName']"
-                    },
-                    "sink": {
-                      "path": "['displayName']"
-                    }
-                  }
-                ]
               }
             },
             "inputs": [
               {
-                "referenceName": "ds-bc-rest",
+                "referenceName": "ds_bc_rest",
                 "type": "DatasetReference",
                 "parameters": {
                   "relativeUrl": "api/v2.0/companies?$select=id,name,displayName"
@@ -239,7 +209,7 @@
             ],
             "outputs": [
               {
-                "referenceName": "ds-raw-json",
+                "referenceName": "ds_raw_json",
                 "type": "DatasetReference",
                 "parameters": {
                   "folderPath": {
@@ -279,7 +249,7 @@
                 }
               },
               "dataset": {
-                "referenceName": "ds-raw-json",
+                "referenceName": "ds_raw_json",
                 "type": "DatasetReference",
                 "parameters": {
                   "folderPath": {
@@ -291,6 +261,53 @@
               },
               "firstRowOnly": false
             }
+          },
+          {
+            "name": "NonemptyCompanyPages",
+            "type": "Filter",
+            "dependsOn": [
+              {
+                "activity": "ReadCompanies",
+                "dependencyConditions": ["Succeeded"]
+              }
+            ],
+            "typeProperties": {
+              "items": {
+                "value": "@activity('ReadCompanies').output.value",
+                "type": "Expression"
+              },
+              "condition": {
+                "value": "@greater(length(item().value), 0)",
+                "type": "Expression"
+              }
+            }
+          },
+          {
+            "name": "RequireAuthorizedCompany",
+            "type": "IfCondition",
+            "dependsOn": [
+              {
+                "activity": "NonemptyCompanyPages",
+                "dependencyConditions": ["Succeeded"]
+              }
+            ],
+            "typeProperties": {
+              "expression": {
+                "value": "@equals(length(activity('NonemptyCompanyPages').output.value), 0)",
+                "type": "Expression"
+              },
+              "ifTrueActivities": [
+                {
+                  "name": "FailEmptyCompanyDiscovery",
+                  "type": "Fail",
+                  "typeProperties": {
+                    "errorCode": "EmptyCompanyDiscovery",
+                    "message": "Business Central returned no companies. Check the enabled Entra application and its company-scoped BC permissions; HTTP success alone does not establish data access."
+                  }
+                }
+              ],
+              "ifFalseActivities": []
+            }
           }
         ]
       }
@@ -300,8 +317,8 @@
       "apiVersion": "2018-06-01",
       "name": "[concat(parameters('factoryName'), '/pl-extract-entity-full')]",
       "dependsOn": [
-        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds-bc-rest')]",
-        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds-raw-json')]"
+        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds_bc_rest')]",
+        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds_raw_json')]"
       ],
       "properties": {
         "description": "Full extraction preserving complete REST response envelopes. Incremental checkpoints and delete capture are not implemented in this first-stage pipeline.",
@@ -364,7 +381,7 @@
             },
             "inputs": [
               {
-                "referenceName": "ds-bc-rest",
+                "referenceName": "ds_bc_rest",
                 "type": "DatasetReference",
                 "parameters": {
                   "relativeUrl": {
@@ -376,7 +393,7 @@
             ],
             "outputs": [
               {
-                "referenceName": "ds-raw-json",
+                "referenceName": "ds_raw_json",
                 "type": "DatasetReference",
                 "parameters": {
                   "folderPath": {
@@ -387,6 +404,106 @@
                 }
               }
             ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/pipelines",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/pl-validate-raw-json')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds_raw_json')]"
+      ],
+      "properties": {
+        "description": "Reads a small raw JSON file through the private runtime for verification. Lookup is limited to 5000 rows and 4 MB; not intended for production-scale validation.",
+        "parameters": {
+          "folderPath": {
+            "type": "String"
+          },
+          "fileName": {
+            "type": "String",
+            "defaultValue": "response-pages.json"
+          }
+        },
+        "activities": [
+          {
+            "name": "InspectFile",
+            "type": "GetMetadata",
+            "policy": {
+              "timeout": "0.00:10:00",
+              "retry": 2,
+              "retryIntervalInSeconds": 30
+            },
+            "typeProperties": {
+              "dataset": {
+                "referenceName": "ds_raw_json",
+                "type": "DatasetReference",
+                "parameters": {
+                  "folderPath": {
+                    "value": "@pipeline().parameters.folderPath",
+                    "type": "Expression"
+                  },
+                  "fileName": {
+                    "value": "@pipeline().parameters.fileName",
+                    "type": "Expression"
+                  }
+                }
+              },
+              "fieldList": [
+                "exists",
+                "size",
+                "lastModified"
+              ],
+              "storeSettings": {
+                "type": "AzureBlobFSReadSettings",
+                "recursive": false
+              }
+            }
+          },
+          {
+            "name": "ReadRawFile",
+            "type": "Lookup",
+            "dependsOn": [
+              {
+                "activity": "InspectFile",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "0.00:10:00",
+              "retry": 2,
+              "retryIntervalInSeconds": 30
+            },
+            "typeProperties": {
+              "source": {
+                "type": "JsonSource",
+                "storeSettings": {
+                  "type": "AzureBlobFSReadSettings",
+                  "recursive": false
+                },
+                "formatSettings": {
+                  "type": "JsonReadSettings"
+                }
+              },
+              "dataset": {
+                "referenceName": "ds_raw_json",
+                "type": "DatasetReference",
+                "parameters": {
+                  "folderPath": {
+                    "value": "@pipeline().parameters.folderPath",
+                    "type": "Expression"
+                  },
+                  "fileName": {
+                    "value": "@pipeline().parameters.fileName",
+                    "type": "Expression"
+                  }
+                }
+              },
+              "firstRowOnly": false
+            }
           }
         ]
       }
