@@ -1,0 +1,457 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "factoryName": {
+      "type": "string"
+    },
+    "tenantId": {
+      "type": "string"
+    },
+    "environment": {
+      "type": "string",
+      "defaultValue": "Sandbox"
+    },
+    "clientId": {
+      "type": "string"
+    },
+    "storageName": {
+      "type": "string"
+    },
+    "vaultName": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.DataFactory/factories/linkedservices",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/ls-key-vault')]",
+      "properties": {
+        "type": "AzureKeyVault",
+        "typeProperties": {
+          "baseUrl": "[concat('https://', parameters('vaultName'), '.vault.azure.net/')]"
+        },
+        "connectVia": {
+          "referenceName": "PrivateAzureIR",
+          "type": "IntegrationRuntimeReference"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/linkedservices",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/ls-business-central')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/linkedservices', parameters('factoryName'), 'ls-key-vault')]"
+      ],
+      "properties": {
+        "type": "RestService",
+        "typeProperties": {
+          "url": "[concat('https://api.businesscentral.dynamics.com/v2.0/', parameters('tenantId'), '/', parameters('environment'), '/')]",
+          "enableServerCertificateValidation": true,
+          "authenticationType": "AadServicePrincipal",
+          "servicePrincipalId": "[parameters('clientId')]",
+          "servicePrincipalCredentialType": "ServicePrincipalKey",
+          "servicePrincipalKey": {
+            "type": "AzureKeyVaultSecret",
+            "store": {
+              "referenceName": "ls-key-vault",
+              "type": "LinkedServiceReference"
+            },
+            "secretName": "bc-extraction-client-secret"
+          },
+          "tenant": "[parameters('tenantId')]",
+          "aadResourceId": "https://api.businesscentral.dynamics.com"
+        },
+        "connectVia": {
+          "referenceName": "PrivateAzureIR",
+          "type": "IntegrationRuntimeReference"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/linkedservices",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/ls-adls-gen2')]",
+      "properties": {
+        "type": "AzureBlobFS",
+        "typeProperties": {
+          "url": "[concat('https://', parameters('storageName'), '.dfs.core.windows.net')]"
+        },
+        "connectVia": {
+          "referenceName": "PrivateAzureIR",
+          "type": "IntegrationRuntimeReference"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/ds-bc-rest')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/linkedservices', parameters('factoryName'), 'ls-business-central')]"
+      ],
+      "properties": {
+        "linkedServiceName": {
+          "referenceName": "ls-business-central",
+          "type": "LinkedServiceReference"
+        },
+        "parameters": {
+          "relativeUrl": {
+            "type": "String"
+          }
+        },
+        "type": "RestResource",
+        "typeProperties": {
+          "relativeUrl": {
+            "value": "@dataset().relativeUrl",
+            "type": "Expression"
+          }
+        },
+        "schema": []
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/ds-raw-json')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/linkedservices', parameters('factoryName'), 'ls-adls-gen2')]"
+      ],
+      "properties": {
+        "linkedServiceName": {
+          "referenceName": "ls-adls-gen2",
+          "type": "LinkedServiceReference"
+        },
+        "parameters": {
+          "folderPath": {
+            "type": "String"
+          },
+          "fileName": {
+            "type": "String"
+          }
+        },
+        "type": "Json",
+        "typeProperties": {
+          "location": {
+            "type": "AzureBlobFSLocation",
+            "fileSystem": "raw",
+            "folderPath": {
+              "value": "@dataset().folderPath",
+              "type": "Expression"
+            },
+            "fileName": {
+              "value": "@dataset().fileName",
+              "type": "Expression"
+            }
+          },
+          "encodingName": "UTF-8"
+        },
+        "schema": {}
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/pipelines",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/pl-discover-companies')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds-bc-rest')]",
+        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds-raw-json')]"
+      ],
+      "properties": {
+        "description": "Copies paginated company IDs and names into a run-specific discovery file, then returns them through Lookup.",
+        "concurrency": 1,
+        "activities": [
+          {
+            "name": "CopyCompanies",
+            "type": "Copy",
+            "policy": {
+              "timeout": "0.00:30:00",
+              "retry": 3,
+              "retryIntervalInSeconds": 30,
+              "secureInput": true,
+              "secureOutput": false
+            },
+            "typeProperties": {
+              "source": {
+                "type": "RestSource",
+                "requestMethod": "GET",
+                "httpRequestTimeout": "00:02:00",
+                "requestInterval": "00.00:00:01",
+                "additionalHeaders": {
+                  "Prefer": "odata.maxpagesize=2"
+                },
+                "paginationRules": {
+                  "AbsoluteUrl": "$['@odata.nextLink']",
+                  "supportRFC5988": "false"
+                }
+              },
+              "sink": {
+                "type": "JsonSink",
+                "storeSettings": {
+                  "type": "AzureBlobFSWriteSettings"
+                },
+                "formatSettings": {
+                  "type": "JsonWriteSettings",
+                  "filePattern": "arrayOfObjects"
+                }
+              },
+              "translator": {
+                "type": "TabularTranslator",
+                "collectionReference": "$['value']",
+                "mappings": [
+                  {
+                    "source": {
+                      "path": "['id']"
+                    },
+                    "sink": {
+                      "path": "['id']"
+                    }
+                  },
+                  {
+                    "source": {
+                      "path": "['name']"
+                    },
+                    "sink": {
+                      "path": "['name']"
+                    }
+                  },
+                  {
+                    "source": {
+                      "path": "['displayName']"
+                    },
+                    "sink": {
+                      "path": "['displayName']"
+                    }
+                  }
+                ]
+              }
+            },
+            "inputs": [
+              {
+                "referenceName": "ds-bc-rest",
+                "type": "DatasetReference",
+                "parameters": {
+                  "relativeUrl": "api/v2.0/companies?$select=id,name,displayName"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "referenceName": "ds-raw-json",
+                "type": "DatasetReference",
+                "parameters": {
+                  "folderPath": {
+                    "value": "@concat('business-central/company-discovery/', pipeline().RunId)",
+                    "type": "Expression"
+                  },
+                  "fileName": "companies.json"
+                }
+              }
+            ]
+          },
+          {
+            "name": "ReadCompanies",
+            "type": "Lookup",
+            "dependsOn": [
+              {
+                "activity": "CopyCompanies",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "0.00:10:00",
+              "retry": 2,
+              "retryIntervalInSeconds": 30
+            },
+            "typeProperties": {
+              "source": {
+                "type": "JsonSource",
+                "storeSettings": {
+                  "type": "AzureBlobFSReadSettings",
+                  "recursive": false
+                },
+                "formatSettings": {
+                  "type": "JsonReadSettings"
+                }
+              },
+              "dataset": {
+                "referenceName": "ds-raw-json",
+                "type": "DatasetReference",
+                "parameters": {
+                  "folderPath": {
+                    "value": "@concat('business-central/company-discovery/', pipeline().RunId)",
+                    "type": "Expression"
+                  },
+                  "fileName": "companies.json"
+                }
+              },
+              "firstRowOnly": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/pipelines",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/pl-extract-entity-full')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds-bc-rest')]",
+        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds-raw-json')]"
+      ],
+      "properties": {
+        "description": "Full extraction preserving complete REST response envelopes. Incremental checkpoints and delete capture are not implemented in this first-stage pipeline.",
+        "parameters": {
+          "companyId": {
+            "type": "String"
+          },
+          "entity": {
+            "type": "String",
+            "defaultValue": "customers"
+          },
+          "apiPath": {
+            "type": "String",
+            "defaultValue": "api/v2.0"
+          },
+          "pageSize": {
+            "type": "Int",
+            "defaultValue": 1000
+          }
+        },
+        "activities": [
+          {
+            "name": "CopyEntity",
+            "type": "Copy",
+            "policy": {
+              "timeout": "0.01:00:00",
+              "retry": 4,
+              "retryIntervalInSeconds": 30,
+              "secureInput": true,
+              "secureOutput": false
+            },
+            "typeProperties": {
+              "source": {
+                "type": "RestSource",
+                "requestMethod": "GET",
+                "httpRequestTimeout": "00:02:00",
+                "requestInterval": "00.00:00:01",
+                "additionalHeaders": {
+                  "Prefer": {
+                    "value": "@concat('odata.maxpagesize=', string(pipeline().parameters.pageSize))",
+                    "type": "Expression"
+                  }
+                },
+                "paginationRules": {
+                  "AbsoluteUrl": "$['@odata.nextLink']",
+                  "supportRFC5988": "false"
+                }
+              },
+              "sink": {
+                "type": "JsonSink",
+                "storeSettings": {
+                  "type": "AzureBlobFSWriteSettings"
+                },
+                "formatSettings": {
+                  "type": "JsonWriteSettings",
+                  "filePattern": "arrayOfObjects"
+                }
+              },
+              "enableStaging": false
+            },
+            "inputs": [
+              {
+                "referenceName": "ds-bc-rest",
+                "type": "DatasetReference",
+                "parameters": {
+                  "relativeUrl": {
+                    "value": "@concat(pipeline().parameters.apiPath, '/companies(', pipeline().parameters.companyId, ')/', pipeline().parameters.entity)",
+                    "type": "Expression"
+                  }
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "referenceName": "ds-raw-json",
+                "type": "DatasetReference",
+                "parameters": {
+                  "folderPath": {
+                    "value": "@concat('business-central/', pipeline().parameters.companyId, '/', pipeline().parameters.entity, '/', formatDateTime(pipeline().TriggerTime, 'yyyy/MM/dd'), '/', pipeline().RunId)",
+                    "type": "Expression"
+                  },
+                  "fileName": "response-pages.json"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/pipelines",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/pl-extract-batch-full')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/pipelines', parameters('factoryName'), 'pl-extract-entity-full')]"
+      ],
+      "properties": {
+        "description": "Metadata-driven full extraction. Supply only explicitly selected companies and entities in the entities parameter.",
+        "concurrency": 1,
+        "parameters": {
+          "entities": {
+            "type": "Array"
+          }
+        },
+        "activities": [
+          {
+            "name": "ForEachEntity",
+            "type": "ForEach",
+            "typeProperties": {
+              "items": {
+                "value": "@pipeline().parameters.entities",
+                "type": "Expression"
+              },
+              "isSequential": false,
+              "batchCount": 2,
+              "activities": [
+                {
+                  "name": "ExtractEntity",
+                  "type": "ExecutePipeline",
+                  "typeProperties": {
+                    "pipeline": {
+                      "referenceName": "pl-extract-entity-full",
+                      "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true,
+                    "parameters": {
+                      "companyId": {
+                        "value": "@item().companyId",
+                        "type": "Expression"
+                      },
+                      "entity": {
+                        "value": "@item().entity",
+                        "type": "Expression"
+                      },
+                      "apiPath": {
+                        "value": "@item().apiPath",
+                        "type": "Expression"
+                      },
+                      "pageSize": {
+                        "value": "@item().pageSize",
+                        "type": "Expression"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+deployment-state.json
+*.parameters.local.json
+.env
+.env.*

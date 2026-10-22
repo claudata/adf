@@ -1,0 +1,274 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "eastus2"
+    },
+    "suffix": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 12,
+      "metadata": {
+        "description": "Globally unique lowercase alphanumeric suffix for storage, factory, and vault names."
+      }
+    },
+    "operatorObjectId": {
+      "type": "string"
+    }
+  },
+  "variables": {
+    "storageName": "[concat('stbcadf', parameters('suffix'))]",
+    "factoryName": "[concat('adf-bc-', parameters('suffix'))]",
+    "vaultName": "[concat('kv-bcadf-', parameters('suffix'))]",
+    "factoryId": "[resourceId('Microsoft.DataFactory/factories', variables('factoryName'))]",
+    "storageId": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]",
+    "vaultId": "[resourceId('Microsoft.KeyVault/vaults', variables('vaultName'))]",
+    "blobContributorRole": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')]",
+    "secretsUserRole": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')]",
+    "secretsOfficerRole": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('storageName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "isHnsEnabled": true,
+        "minimumTlsVersion": "TLS1_2",
+        "supportsHttpsTrafficOnly": true,
+        "allowBlobPublicAccess": false,
+        "allowSharedKeyAccess": false,
+        "defaultToOAuthAuthentication": true,
+        "publicNetworkAccess": "Disabled"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices",
+      "apiVersion": "2023-05-01",
+      "name": "[concat(variables('storageName'), '/default')]",
+      "dependsOn": [
+        "[variables('storageId')]"
+      ],
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-05-01",
+      "name": "[concat(variables('storageName'), '/default/raw')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('storageName'), 'default')]"
+      ],
+      "properties": {
+        "publicAccess": "None"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-05-01",
+      "name": "[concat(variables('storageName'), '/default/control')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('storageName'), 'default')]"
+      ],
+      "properties": {
+        "publicAccess": "None"
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories",
+      "apiVersion": "2018-06-01",
+      "name": "[variables('factoryName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "publicNetworkAccess": "Enabled"
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/managedVirtualNetworks",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(variables('factoryName'), '/default')]",
+      "dependsOn": [
+        "[variables('factoryId')]"
+      ],
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/integrationRuntimes",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(variables('factoryName'), '/PrivateAzureIR')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/managedVirtualNetworks', variables('factoryName'), 'default')]"
+      ],
+      "properties": {
+        "type": "Managed",
+        "managedVirtualNetwork": {
+          "referenceName": "default",
+          "type": "ManagedVirtualNetworkReference"
+        },
+        "typeProperties": {
+          "computeProperties": {
+            "location": "[parameters('location')]"
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/managedVirtualNetworks/managedPrivateEndpoints",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(variables('factoryName'), '/default/storage-dfs')]",
+      "dependsOn": [
+        "[variables('storageId')]",
+        "[resourceId('Microsoft.DataFactory/factories/managedVirtualNetworks', variables('factoryName'), 'default')]"
+      ],
+      "properties": {
+        "privateLinkResourceId": "[variables('storageId')]",
+        "groupId": "dfs"
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/managedVirtualNetworks/managedPrivateEndpoints",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(variables('factoryName'), '/default/storage-blob')]",
+      "dependsOn": [
+        "[variables('storageId')]",
+        "[resourceId('Microsoft.DataFactory/factories/managedVirtualNetworks', variables('factoryName'), 'default')]"
+      ],
+      "properties": {
+        "privateLinkResourceId": "[variables('storageId')]",
+        "groupId": "blob"
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/managedVirtualNetworks/managedPrivateEndpoints",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(variables('factoryName'), '/default/key-vault')]",
+      "dependsOn": [
+        "[variables('vaultId')]",
+        "[resourceId('Microsoft.DataFactory/factories/managedVirtualNetworks', variables('factoryName'), 'default')]"
+      ],
+      "properties": {
+        "privateLinkResourceId": "[variables('vaultId')]",
+        "groupId": "vault"
+      }
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults",
+      "apiVersion": "2023-07-01",
+      "name": "[variables('vaultName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "tenantId": "[subscription().tenantId]",
+        "sku": {
+          "family": "A",
+          "name": "standard"
+        },
+        "accessPolicies": [],
+        "enableRbacAuthorization": true,
+        "enableSoftDelete": true,
+        "softDeleteRetentionInDays": 7,
+        "enablePurgeProtection": true,
+        "publicNetworkAccess": "Disabled"
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(resourceGroup().id, 'adf-raw-writer')]",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('storageName'), 'default', 'raw')]",
+      "dependsOn": [
+        "[variables('factoryId')]",
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('storageName'), 'default', 'raw')]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[variables('blobContributorRole')]",
+        "principalId": "[reference(variables('factoryId'), '2018-06-01', 'Full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(resourceGroup().id, 'adf-control-writer')]",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('storageName'), 'default', 'control')]",
+      "dependsOn": [
+        "[variables('factoryId')]",
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('storageName'), 'default', 'control')]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[variables('blobContributorRole')]",
+        "principalId": "[reference(variables('factoryId'), '2018-06-01', 'Full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(resourceGroup().id, 'adf-secret-reader')]",
+      "scope": "[variables('vaultId')]",
+      "dependsOn": [
+        "[variables('factoryId')]",
+        "[variables('vaultId')]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[variables('secretsUserRole')]",
+        "principalId": "[reference(variables('factoryId'), '2018-06-01', 'Full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(resourceGroup().id, parameters('operatorObjectId'), 'operator-secret-writer')]",
+      "scope": "[variables('vaultId')]",
+      "dependsOn": [
+        "[variables('vaultId')]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[variables('secretsOfficerRole')]",
+        "principalId": "[parameters('operatorObjectId')]",
+        "principalType": "User"
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(resourceGroup().id, parameters('operatorObjectId'), 'operator-storage-access')]",
+      "scope": "[variables('storageId')]",
+      "dependsOn": [
+        "[variables('storageId')]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[variables('blobContributorRole')]",
+        "principalId": "[parameters('operatorObjectId')]",
+        "principalType": "User"
+      }
+    }
+  ],
+  "outputs": {
+    "factoryName": {
+      "type": "string",
+      "value": "[variables('factoryName')]"
+    },
+    "factoryPrincipalId": {
+      "type": "string",
+      "value": "[reference(variables('factoryId'), '2018-06-01', 'Full').identity.principalId]"
+    },
+    "storageName": {
+      "type": "string",
+      "value": "[variables('storageName')]"
+    },
+    "vaultName": {
+      "type": "string",
+      "value": "[variables('vaultName')]"
+    }
+  }
+}
