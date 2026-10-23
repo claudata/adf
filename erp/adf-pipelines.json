@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
-  "contentVersion": "1.0.0.0",
+  "contentVersion": "2.0.0.0",
   "parameters": {
     "factoryName": {
       "type": "string"
@@ -20,6 +20,28 @@
     },
     "vaultName": {
       "type": "string"
+    },
+    "copyRetries": {
+      "type": "int",
+      "defaultValue": 3,
+      "minValue": 0,
+      "maxValue": 10
+    },
+    "retryIntervalSeconds": {
+      "type": "int",
+      "defaultValue": 60,
+      "minValue": 30,
+      "maxValue": 900
+    },
+    "restRequestInterval": {
+      "type": "string",
+      "defaultValue": "00.00:00:01",
+      "allowedValues": [
+        "00.00:00:01",
+        "00.00:00:02",
+        "00.00:00:05",
+        "00.00:00:10"
+      ]
     }
   },
   "resources": [
@@ -31,6 +53,21 @@
         "type": "AzureKeyVault",
         "typeProperties": {
           "baseUrl": "[concat('https://', parameters('vaultName'), '.vault.azure.net/')]"
+        },
+        "connectVia": {
+          "referenceName": "PrivateAzureIR",
+          "type": "IntegrationRuntimeReference"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/linkedservices",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/ls_adls_gen2')]",
+      "properties": {
+        "type": "AzureBlobFS",
+        "typeProperties": {
+          "url": "[concat('https://', parameters('storageName'), '.dfs.core.windows.net')]"
         },
         "connectVia": {
           "referenceName": "PrivateAzureIR",
@@ -68,48 +105,6 @@
           "referenceName": "PrivateAzureIR",
           "type": "IntegrationRuntimeReference"
         }
-      }
-    },
-    {
-      "type": "Microsoft.DataFactory/factories/linkedservices",
-      "apiVersion": "2018-06-01",
-      "name": "[concat(parameters('factoryName'), '/ls_adls_gen2')]",
-      "properties": {
-        "type": "AzureBlobFS",
-        "typeProperties": {
-          "url": "[concat('https://', parameters('storageName'), '.dfs.core.windows.net')]"
-        },
-        "connectVia": {
-          "referenceName": "PrivateAzureIR",
-          "type": "IntegrationRuntimeReference"
-        }
-      }
-    },
-    {
-      "type": "Microsoft.DataFactory/factories/datasets",
-      "apiVersion": "2018-06-01",
-      "name": "[concat(parameters('factoryName'), '/ds_bc_rest')]",
-      "dependsOn": [
-        "[resourceId('Microsoft.DataFactory/factories/linkedservices', parameters('factoryName'), 'ls_business_central')]"
-      ],
-      "properties": {
-        "linkedServiceName": {
-          "referenceName": "ls_business_central",
-          "type": "LinkedServiceReference"
-        },
-        "parameters": {
-          "relativeUrl": {
-            "type": "String"
-          }
-        },
-        "type": "RestResource",
-        "typeProperties": {
-          "relativeUrl": {
-            "value": "@dataset().relativeUrl",
-            "type": "Expression"
-          }
-        },
-        "schema": []
       }
     },
     {
@@ -152,6 +147,1047 @@
       }
     },
     {
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/ds_bc_rest')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/linkedservices', parameters('factoryName'), 'ls_business_central')]"
+      ],
+      "properties": {
+        "linkedServiceName": {
+          "referenceName": "ls_business_central",
+          "type": "LinkedServiceReference"
+        },
+        "parameters": {
+          "relativeUrl": {
+            "type": "String"
+          }
+        },
+        "type": "RestResource",
+        "typeProperties": {
+          "relativeUrl": {
+            "value": "@dataset().relativeUrl",
+            "type": "Expression"
+          }
+        },
+        "schema": []
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/linkedservices",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/ls_bc_checkpoints')]",
+      "dependsOn": [],
+      "properties": {
+        "type": "AzureTableStorage",
+        "connectVia": {
+          "referenceName": "PrivateAzureIR",
+          "type": "IntegrationRuntimeReference"
+        },
+        "typeProperties": {
+          "serviceEndpoint": "[concat('https://', parameters('storageName'), '.table.core.windows.net/')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/ds_bc_checkpoints')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/linkedservices', parameters('factoryName'), 'ls_bc_checkpoints')]"
+      ],
+      "properties": {
+        "type": "AzureTable",
+        "schema": [],
+        "linkedServiceName": {
+          "referenceName": "ls_bc_checkpoints",
+          "type": "LinkedServiceReference"
+        },
+        "typeProperties": {
+          "tableName": "BcExtractionCheckpoint"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/pipelines",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/pl-commit-checkpoint')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds_bc_rest')]",
+        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds_bc_checkpoints')]"
+      ],
+      "properties": {
+        "description": "Internal commit helper. Invoke only through the serialized extraction entrypoint after successful copy/output checks.",
+        "parameters": {
+          "companyId": {
+            "type": "String"
+          },
+          "apiPath": {
+            "type": "String"
+          },
+          "partitionKey": {
+            "type": "String"
+          },
+          "checkpointKey": {
+            "type": "String"
+          },
+          "upperBound": {
+            "type": "String"
+          },
+          "lowerBound": {
+            "type": "String"
+          },
+          "outputFolder": {
+            "type": "String"
+          },
+          "sourceRunId": {
+            "type": "String"
+          }
+        },
+        "activities": [
+          {
+            "name": "CommitCheckpoint",
+            "type": "Copy",
+            "policy": {
+              "timeout": "0.00:30:00",
+              "retry": "[parameters('copyRetries')]",
+              "retryIntervalInSeconds": "[parameters('retryIntervalSeconds')]",
+              "secureInput": true,
+              "secureOutput": false
+            },
+            "typeProperties": {
+              "source": {
+                "type": "RestSource",
+                "requestMethod": "GET",
+                "httpRequestTimeout": "00:02:00",
+                "additionalColumns": [
+                  {
+                    "name": "PartitionKey",
+                    "value": {
+                      "value": "@pipeline().parameters.partitionKey",
+                      "type": "Expression"
+                    }
+                  },
+                  {
+                    "name": "RowKey",
+                    "value": {
+                      "value": "@pipeline().parameters.checkpointKey",
+                      "type": "Expression"
+                    }
+                  },
+                  {
+                    "name": "Watermark",
+                    "value": {
+                      "value": "@pipeline().parameters.upperBound",
+                      "type": "Expression"
+                    }
+                  },
+                  {
+                    "name": "RunId",
+                    "value": {
+                      "value": "@pipeline().parameters.sourceRunId",
+                      "type": "Expression"
+                    }
+                  },
+                  {
+                    "name": "OutputFolder",
+                    "value": {
+                      "value": "@pipeline().parameters.outputFolder",
+                      "type": "Expression"
+                    }
+                  },
+                  {
+                    "name": "LowerBound",
+                    "value": {
+                      "value": "@pipeline().parameters.lowerBound",
+                      "type": "Expression"
+                    }
+                  }
+                ]
+              },
+              "sink": {
+                "type": "AzureTableSink",
+                "azureTablePartitionKeyName": "PartitionKey",
+                "azureTableRowKeyName": "RowKey",
+                "azureTableInsertType": "replace",
+                "writeBatchSize": 1,
+                "maxConcurrentConnections": 1
+              },
+              "translator": {
+                "type": "TabularTranslator",
+                "mappings": [
+                  {
+                    "source": {
+                      "path": "$['PartitionKey']",
+                      "type": "String"
+                    },
+                    "sink": {
+                      "name": "PartitionKey",
+                      "type": "String"
+                    }
+                  },
+                  {
+                    "source": {
+                      "path": "$['RowKey']",
+                      "type": "String"
+                    },
+                    "sink": {
+                      "name": "RowKey",
+                      "type": "String"
+                    }
+                  },
+                  {
+                    "source": {
+                      "path": "$['Watermark']",
+                      "type": "String"
+                    },
+                    "sink": {
+                      "name": "Watermark",
+                      "type": "String"
+                    }
+                  },
+                  {
+                    "source": {
+                      "path": "$['RunId']",
+                      "type": "String"
+                    },
+                    "sink": {
+                      "name": "RunId",
+                      "type": "String"
+                    }
+                  },
+                  {
+                    "source": {
+                      "path": "$['OutputFolder']",
+                      "type": "String"
+                    },
+                    "sink": {
+                      "name": "OutputFolder",
+                      "type": "String"
+                    }
+                  },
+                  {
+                    "source": {
+                      "path": "$['LowerBound']",
+                      "type": "String"
+                    },
+                    "sink": {
+                      "name": "LowerBound",
+                      "type": "String"
+                    }
+                  }
+                ]
+              }
+            },
+            "inputs": [
+              {
+                "referenceName": "ds_bc_rest",
+                "type": "DatasetReference",
+                "parameters": {
+                  "relativeUrl": {
+                    "value": "@concat('api/v2.0/companies(', pipeline().parameters.companyId, ')?$select=id')",
+                    "type": "Expression"
+                  }
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "referenceName": "ds_bc_checkpoints",
+                "type": "DatasetReference"
+              }
+            ]
+          },
+          {
+            "name": "ReadCommittedCheckpoint",
+            "type": "Lookup",
+            "dependsOn": [
+              {
+                "activity": "CommitCheckpoint",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "0.00:30:00",
+              "retry": "[parameters('copyRetries')]",
+              "retryIntervalInSeconds": "[parameters('retryIntervalSeconds')]",
+              "secureInput": true,
+              "secureOutput": false
+            },
+            "typeProperties": {
+              "source": {
+                "type": "AzureTableSource",
+                "azureTableSourceQuery": {
+                  "value": "@concat('PartitionKey eq ''', pipeline().parameters.partitionKey, ''' and RowKey eq ''', pipeline().parameters.checkpointKey, '''')",
+                  "type": "Expression"
+                },
+                "azureTableSourceIgnoreTableNotFound": false
+              },
+              "dataset": {
+                "referenceName": "ds_bc_checkpoints",
+                "type": "DatasetReference"
+              },
+              "firstRowOnly": false
+            }
+          },
+          {
+            "name": "VerifyCommit",
+            "type": "IfCondition",
+            "dependsOn": [
+              {
+                "activity": "ReadCommittedCheckpoint",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "typeProperties": {
+              "expression": {
+                "value": "@not(and(equals(activity('CommitCheckpoint').output.rowsCopied, 1), if(equals(activity('ReadCommittedCheckpoint').output.count, 1), and(equals(activity('ReadCommittedCheckpoint').output.value[0].Watermark, pipeline().parameters.upperBound), equals(activity('ReadCommittedCheckpoint').output.value[0].RunId, pipeline().parameters.sourceRunId)), false)))",
+                "type": "Expression"
+              },
+              "ifTrueActivities": [
+                {
+                  "name": "FailVerifyCommit",
+                  "type": "Fail",
+                  "typeProperties": {
+                    "errorCode": "CheckpointCommitNotConfirmed",
+                    "message": "Checkpoint must contain exactly one row matching this run and window."
+                  }
+                }
+              ],
+              "ifFalseActivities": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/pipelines",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/pl-extract-entity')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds_bc_rest')]",
+        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds_raw_json')]",
+        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds_bc_checkpoints')]",
+        "[resourceId('Microsoft.DataFactory/factories/pipelines', parameters('factoryName'), 'pl-commit-checkpoint')]"
+      ],
+      "properties": {
+        "concurrency": 1,
+        "description": "Serialized full/incremental extraction. Incremental commits an atomic Table entity only after copy and output checks. Timestamp windows overlap; deletes and cross-factory distributed locks are not implemented.",
+        "parameters": {
+          "companyId": {
+            "type": "String"
+          },
+          "entity": {
+            "type": "String",
+            "defaultValue": "customers"
+          },
+          "apiPath": {
+            "type": "String",
+            "defaultValue": "api/v2.0"
+          },
+          "loadMode": {
+            "type": "String",
+            "defaultValue": "Full"
+          },
+          "initialWatermark": {
+            "type": "String",
+            "defaultValue": "1970-01-01T00:00:00Z"
+          },
+          "windowEnd": {
+            "type": "String",
+            "defaultValue": ""
+          },
+          "safetyLagSeconds": {
+            "type": "Int",
+            "defaultValue": 120
+          },
+          "overlapSeconds": {
+            "type": "Int",
+            "defaultValue": 120
+          },
+          "cooldownSeconds": {
+            "type": "Int",
+            "defaultValue": 2
+          },
+          "pageSize": {
+            "type": "Int",
+            "defaultValue": 1000
+          }
+        },
+        "variables": {
+          "checkpointKey": {
+            "type": "String"
+          },
+          "upperBound": {
+            "type": "String"
+          },
+          "committedWatermark": {
+            "type": "String"
+          },
+          "lowerBound": {
+            "type": "String"
+          },
+          "query": {
+            "type": "String"
+          },
+          "outputFolder": {
+            "type": "String"
+          },
+          "partitionKey": {
+            "type": "String",
+            "defaultValue": "[concat(parameters('tenantId'), '|', parameters('environment'), '|rest')]"
+          }
+        },
+        "activities": [
+          {
+            "name": "ValidateParameters",
+            "type": "IfCondition",
+            "dependsOn": [],
+            "typeProperties": {
+              "expression": {
+                "value": "@or(or(not(contains(createArray('Full', 'Incremental'), pipeline().parameters.loadMode)), or(or(less(pipeline().parameters.safetyLagSeconds, 0), less(pipeline().parameters.overlapSeconds, 0)), or(or(greater(pipeline().parameters.safetyLagSeconds, 86400), greater(pipeline().parameters.overlapSeconds, 86400)), or(less(pipeline().parameters.cooldownSeconds, 0), greater(pipeline().parameters.cooldownSeconds, 300))))), or(less(pipeline().parameters.pageSize, 1), greater(pipeline().parameters.pageSize, 20000)))",
+                "type": "Expression"
+              },
+              "ifTrueActivities": [
+                {
+                  "name": "FailValidateParameters",
+                  "type": "Fail",
+                  "typeProperties": {
+                    "errorCode": "InvalidParameters",
+                    "message": "Use Full or Incremental with lag/overlap 0..86400, cooldown 0..300 seconds, and REST pageSize 1..20000."
+                  }
+                }
+              ],
+              "ifFalseActivities": []
+            }
+          },
+          {
+            "name": "SetCheckpointKey",
+            "type": "SetVariable",
+            "dependsOn": [
+              {
+                "activity": "ValidateParameters",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "typeProperties": {
+              "variableName": "checkpointKey",
+              "value": {
+                "value": "@replace(replace(replace(base64(string(createArray(pipeline().parameters.companyId, pipeline().parameters.apiPath, pipeline().parameters.entity))), '/', '_'), '+', '-'), '=', '')",
+                "type": "Expression"
+              }
+            }
+          },
+          {
+            "name": "ValidateCheckpointKey",
+            "type": "IfCondition",
+            "dependsOn": [
+              {
+                "activity": "SetCheckpointKey",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "typeProperties": {
+              "expression": {
+                "value": "@greater(length(variables('checkpointKey')), 1024)",
+                "type": "Expression"
+              },
+              "ifTrueActivities": [
+                {
+                  "name": "FailValidateCheckpointKey",
+                  "type": "Fail",
+                  "typeProperties": {
+                    "errorCode": "CheckpointKeyTooLong",
+                    "message": "Encoded company/API/entity identity exceeds the Table row-key limit."
+                  }
+                }
+              ],
+              "ifFalseActivities": []
+            }
+          },
+          {
+            "name": "CaptureUpperBound",
+            "type": "SetVariable",
+            "dependsOn": [
+              {
+                "activity": "ValidateCheckpointKey",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "typeProperties": {
+              "variableName": "upperBound",
+              "value": {
+                "value": "@formatDateTime(if(empty(pipeline().parameters.windowEnd), addSeconds(utcNow(), mul(-1, pipeline().parameters.safetyLagSeconds)), pipeline().parameters.windowEnd), 'yyyy-MM-ddTHH:mm:ss.fffffffZ')",
+                "type": "Expression"
+              }
+            }
+          },
+          {
+            "name": "ReadCheckpoint",
+            "type": "Lookup",
+            "dependsOn": [
+              {
+                "activity": "CaptureUpperBound",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "0.00:30:00",
+              "retry": "[parameters('copyRetries')]",
+              "retryIntervalInSeconds": "[parameters('retryIntervalSeconds')]",
+              "secureInput": true,
+              "secureOutput": false
+            },
+            "typeProperties": {
+              "source": {
+                "type": "AzureTableSource",
+                "azureTableSourceQuery": {
+                  "value": "@concat('PartitionKey eq ''', variables('partitionKey'), ''' and RowKey eq ''', variables('checkpointKey'), '''')",
+                  "type": "Expression"
+                },
+                "azureTableSourceIgnoreTableNotFound": false
+              },
+              "dataset": {
+                "referenceName": "ds_bc_checkpoints",
+                "type": "DatasetReference"
+              },
+              "firstRowOnly": false
+            }
+          },
+          {
+            "name": "SetCommittedWatermark",
+            "type": "SetVariable",
+            "dependsOn": [
+              {
+                "activity": "ReadCheckpoint",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "typeProperties": {
+              "variableName": "committedWatermark",
+              "value": {
+                "value": "@if(equals(activity('ReadCheckpoint').output.count, 0), pipeline().parameters.initialWatermark, activity('ReadCheckpoint').output.value[0].Watermark)",
+                "type": "Expression"
+              }
+            }
+          },
+          {
+            "name": "ValidateWindow",
+            "type": "IfCondition",
+            "dependsOn": [
+              {
+                "activity": "SetCommittedWatermark",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "typeProperties": {
+              "expression": {
+                "value": "@and(equals(pipeline().parameters.loadMode, 'Incremental'), or(greater(ticks(variables('upperBound')), ticks(addSeconds(utcNow(), mul(-1, pipeline().parameters.safetyLagSeconds)))), lessOrEquals(ticks(variables('upperBound')), ticks(variables('committedWatermark')))))",
+                "type": "Expression"
+              },
+              "ifTrueActivities": [
+                {
+                  "name": "FailValidateWindow",
+                  "type": "Fail",
+                  "typeProperties": {
+                    "errorCode": "InvalidIncrementalWindow",
+                    "message": "Window end must advance the checkpoint and cannot exceed now minus safety lag."
+                  }
+                }
+              ],
+              "ifFalseActivities": []
+            }
+          },
+          {
+            "name": "SetLowerBound",
+            "type": "SetVariable",
+            "dependsOn": [
+              {
+                "activity": "ValidateWindow",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "typeProperties": {
+              "variableName": "lowerBound",
+              "value": {
+                "value": "@formatDateTime(addSeconds(variables('committedWatermark'), mul(-1, pipeline().parameters.overlapSeconds)), 'yyyy-MM-ddTHH:mm:ss.fffffffZ')",
+                "type": "Expression"
+              }
+            }
+          },
+          {
+            "name": "SetQuery",
+            "type": "SetVariable",
+            "dependsOn": [
+              {
+                "activity": "SetLowerBound",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "typeProperties": {
+              "variableName": "query",
+              "value": {
+                "value": "@if(equals(pipeline().parameters.loadMode, 'Incremental'), concat('$filter=lastModifiedDateTime ge ', variables('lowerBound'), ' and lastModifiedDateTime lt ', variables('upperBound'), '&$orderby=lastModifiedDateTime asc'), '')",
+                "type": "Expression"
+              }
+            }
+          },
+          {
+            "name": "SetOutputFolder",
+            "type": "SetVariable",
+            "dependsOn": [
+              {
+                "activity": "SetQuery",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "typeProperties": {
+              "variableName": "outputFolder",
+              "value": {
+                "value": "@concat('business-central/', pipeline().parameters.companyId, '/', pipeline().parameters.entity, '/', formatDateTime(pipeline().TriggerTime, 'yyyy/MM/dd'), '/', pipeline().RunId)",
+                "type": "Expression"
+              }
+            }
+          },
+          {
+            "name": "Cooldown",
+            "type": "Wait",
+            "dependsOn": [
+              {
+                "activity": "SetOutputFolder",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "typeProperties": {
+              "waitTimeInSeconds": {
+                "value": "@pipeline().parameters.cooldownSeconds",
+                "type": "Expression"
+              }
+            }
+          },
+          {
+            "name": "CopyEntity",
+            "type": "Copy",
+            "dependsOn": [
+              {
+                "activity": "Cooldown",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "0.01:00:00",
+              "retry": "[parameters('copyRetries')]",
+              "retryIntervalInSeconds": "[parameters('retryIntervalSeconds')]",
+              "secureInput": true,
+              "secureOutput": false
+            },
+            "typeProperties": {
+              "source": {
+                "type": "RestSource",
+                "requestMethod": "GET",
+                "httpRequestTimeout": "00:02:00",
+                "requestInterval": "[parameters('restRequestInterval')]",
+                "additionalHeaders": {
+                  "Prefer": {
+                    "value": "@concat('odata.maxpagesize=', string(pipeline().parameters.pageSize))",
+                    "type": "Expression"
+                  }
+                },
+                "paginationRules": {
+                  "AbsoluteUrl": "$['@odata.nextLink']",
+                  "supportRFC5988": "false"
+                }
+              },
+              "sink": {
+                "type": "JsonSink",
+                "storeSettings": {
+                  "type": "AzureBlobFSWriteSettings"
+                },
+                "formatSettings": {
+                  "type": "JsonWriteSettings",
+                  "filePattern": "arrayOfObjects"
+                }
+              },
+              "enableStaging": false
+            },
+            "inputs": [
+              {
+                "referenceName": "ds_bc_rest",
+                "type": "DatasetReference",
+                "parameters": {
+                  "relativeUrl": {
+                    "value": "@concat(concat(pipeline().parameters.apiPath, '/', 'companies(', pipeline().parameters.companyId, ')/', pipeline().parameters.entity), if(equals(pipeline().parameters.loadMode, 'Incremental'), concat('?', variables('query')), ''))",
+                    "type": "Expression"
+                  }
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "referenceName": "ds_raw_json",
+                "type": "DatasetReference",
+                "parameters": {
+                  "folderPath": {
+                    "value": "@variables('outputFolder')",
+                    "type": "Expression"
+                  },
+                  "fileName": "response-pages.json"
+                }
+              }
+            ]
+          },
+          {
+            "name": "InspectRawOutput",
+            "type": "GetMetadata",
+            "dependsOn": [
+              {
+                "activity": "CopyEntity",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "0.00:30:00",
+              "retry": "[parameters('copyRetries')]",
+              "retryIntervalInSeconds": "[parameters('retryIntervalSeconds')]",
+              "secureInput": true,
+              "secureOutput": false
+            },
+            "typeProperties": {
+              "dataset": {
+                "referenceName": "ds_raw_json",
+                "type": "DatasetReference",
+                "parameters": {
+                  "folderPath": {
+                    "value": "@variables('outputFolder')",
+                    "type": "Expression"
+                  },
+                  "fileName": "response-pages.json"
+                }
+              },
+              "fieldList": [
+                "exists",
+                "size"
+              ],
+              "storeSettings": {
+                "type": "AzureBlobFSReadSettings",
+                "recursive": false
+              }
+            }
+          },
+          {
+            "name": "ValidateRawOutput",
+            "type": "IfCondition",
+            "dependsOn": [
+              {
+                "activity": "InspectRawOutput",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "typeProperties": {
+              "expression": {
+                "value": "@not(or(equals(activity('CopyEntity').output.rowsCopied, 0), if(activity('InspectRawOutput').output.exists, greater(activity('InspectRawOutput').output.size, 0), false)))",
+                "type": "Expression"
+              },
+              "ifTrueActivities": [
+                {
+                  "name": "FailValidateRawOutput",
+                  "type": "Fail",
+                  "typeProperties": {
+                    "errorCode": "InvalidRawOutput",
+                    "message": "Successful nonempty copies must produce a nonempty raw file."
+                  }
+                }
+              ],
+              "ifFalseActivities": []
+            }
+          },
+          {
+            "name": "CommitIncrementalOnly",
+            "type": "IfCondition",
+            "dependsOn": [
+              {
+                "activity": "ValidateRawOutput",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "typeProperties": {
+              "expression": {
+                "value": "@equals(pipeline().parameters.loadMode, 'Incremental')",
+                "type": "Expression"
+              },
+              "ifTrueActivities": [
+                {
+                  "name": "PersistCheckpoint",
+                  "type": "ExecutePipeline",
+                  "typeProperties": {
+                    "pipeline": {
+                      "referenceName": "pl-commit-checkpoint",
+                      "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true,
+                    "parameters": {
+                      "companyId": {
+                        "value": "@pipeline().parameters.companyId",
+                        "type": "Expression"
+                      },
+                      "apiPath": {
+                        "value": "@pipeline().parameters.apiPath",
+                        "type": "Expression"
+                      },
+                      "partitionKey": {
+                        "value": "@variables('partitionKey')",
+                        "type": "Expression"
+                      },
+                      "checkpointKey": {
+                        "value": "@variables('checkpointKey')",
+                        "type": "Expression"
+                      },
+                      "upperBound": {
+                        "value": "@variables('upperBound')",
+                        "type": "Expression"
+                      },
+                      "lowerBound": {
+                        "value": "@variables('lowerBound')",
+                        "type": "Expression"
+                      },
+                      "outputFolder": {
+                        "value": "@variables('outputFolder')",
+                        "type": "Expression"
+                      },
+                      "sourceRunId": {
+                        "value": "@pipeline().RunId",
+                        "type": "Expression"
+                      }
+                    }
+                  }
+                }
+              ],
+              "ifFalseActivities": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/pipelines",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/pl-extract-entity-full')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/pipelines', parameters('factoryName'), 'pl-extract-entity')]"
+      ],
+      "properties": {
+        "description": "Compatibility full-load wrapper. Full runs do not change incremental checkpoints.",
+        "parameters": {
+          "companyId": {
+            "type": "String"
+          },
+          "entity": {
+            "type": "String",
+            "defaultValue": "customers"
+          },
+          "apiPath": {
+            "type": "String",
+            "defaultValue": "api/v2.0"
+          },
+          "pageSize": {
+            "type": "Int",
+            "defaultValue": 1000
+          }
+        },
+        "activities": [
+          {
+            "name": "ExtractFull",
+            "type": "ExecutePipeline",
+            "typeProperties": {
+              "pipeline": {
+                "referenceName": "pl-extract-entity",
+                "type": "PipelineReference"
+              },
+              "waitOnCompletion": true,
+              "parameters": {
+                "companyId": {
+                  "value": "@pipeline().parameters.companyId",
+                  "type": "Expression"
+                },
+                "entity": {
+                  "value": "@pipeline().parameters.entity",
+                  "type": "Expression"
+                },
+                "apiPath": {
+                  "value": "@pipeline().parameters.apiPath",
+                  "type": "Expression"
+                },
+                "pageSize": {
+                  "value": "@pipeline().parameters.pageSize",
+                  "type": "Expression"
+                },
+                "loadMode": "Full"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/pipelines",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/pl-extract-batch')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/pipelines', parameters('factoryName'), 'pl-extract-entity')]"
+      ],
+      "properties": {
+        "concurrency": 1,
+        "parameters": {
+          "entities": {
+            "type": "Array"
+          }
+        },
+        "description": "Sequential metadata-driven extraction; all calls enter the serialized entity pipeline.",
+        "activities": [
+          {
+            "name": "ForEachEntity",
+            "type": "ForEach",
+            "typeProperties": {
+              "items": {
+                "value": "@pipeline().parameters.entities",
+                "type": "Expression"
+              },
+              "isSequential": true,
+              "activities": [
+                {
+                  "name": "ExtractEntity",
+                  "type": "ExecutePipeline",
+                  "typeProperties": {
+                    "pipeline": {
+                      "referenceName": "pl-extract-entity",
+                      "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true,
+                    "parameters": {
+                      "companyId": {
+                        "value": "@item().companyId",
+                        "type": "Expression"
+                      },
+                      "entity": {
+                        "value": "@item().entity",
+                        "type": "Expression"
+                      },
+                      "apiPath": {
+                        "value": "@item().apiPath",
+                        "type": "Expression"
+                      },
+                      "pageSize": {
+                        "value": "@item().pageSize",
+                        "type": "Expression"
+                      },
+                      "loadMode": {
+                        "value": "@item().loadMode",
+                        "type": "Expression"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/pipelines",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/pl-extract-batch-full')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/pipelines', parameters('factoryName'), 'pl-extract-entity')]"
+      ],
+      "properties": {
+        "concurrency": 1,
+        "parameters": {
+          "entities": {
+            "type": "Array"
+          }
+        },
+        "description": "Sequential metadata-driven extraction; all calls enter the serialized entity pipeline.",
+        "activities": [
+          {
+            "name": "ForEachEntity",
+            "type": "ForEach",
+            "typeProperties": {
+              "items": {
+                "value": "@pipeline().parameters.entities",
+                "type": "Expression"
+              },
+              "isSequential": true,
+              "activities": [
+                {
+                  "name": "ExtractEntity",
+                  "type": "ExecutePipeline",
+                  "typeProperties": {
+                    "pipeline": {
+                      "referenceName": "pl-extract-entity",
+                      "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true,
+                    "parameters": {
+                      "companyId": {
+                        "value": "@item().companyId",
+                        "type": "Expression"
+                      },
+                      "entity": {
+                        "value": "@item().entity",
+                        "type": "Expression"
+                      },
+                      "apiPath": {
+                        "value": "@item().apiPath",
+                        "type": "Expression"
+                      },
+                      "pageSize": {
+                        "value": "@item().pageSize",
+                        "type": "Expression"
+                      },
+                      "loadMode": "Full"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
       "type": "Microsoft.DataFactory/factories/pipelines",
       "apiVersion": "2018-06-01",
       "name": "[concat(parameters('factoryName'), '/pl-discover-companies')]",
@@ -168,8 +1204,8 @@
             "type": "Copy",
             "policy": {
               "timeout": "0.00:30:00",
-              "retry": 3,
-              "retryIntervalInSeconds": 30,
+              "retry": "[parameters('copyRetries')]",
+              "retryIntervalInSeconds": "[parameters('retryIntervalSeconds')]",
               "secureInput": true,
               "secureOutput": false
             },
@@ -233,9 +1269,11 @@
               }
             ],
             "policy": {
-              "timeout": "0.00:10:00",
-              "retry": 2,
-              "retryIntervalInSeconds": 30
+              "timeout": "0.00:30:00",
+              "retry": "[parameters('copyRetries')]",
+              "retryIntervalInSeconds": "[parameters('retryIntervalSeconds')]",
+              "secureInput": true,
+              "secureOutput": false
             },
             "typeProperties": {
               "source": {
@@ -268,7 +1306,9 @@
             "dependsOn": [
               {
                 "activity": "ReadCompanies",
-                "dependencyConditions": ["Succeeded"]
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
               }
             ],
             "typeProperties": {
@@ -288,7 +1328,9 @@
             "dependsOn": [
               {
                 "activity": "NonemptyCompanyPages",
-                "dependencyConditions": ["Succeeded"]
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
               }
             ],
             "typeProperties": {
@@ -308,102 +1350,6 @@
               ],
               "ifFalseActivities": []
             }
-          }
-        ]
-      }
-    },
-    {
-      "type": "Microsoft.DataFactory/factories/pipelines",
-      "apiVersion": "2018-06-01",
-      "name": "[concat(parameters('factoryName'), '/pl-extract-entity-full')]",
-      "dependsOn": [
-        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds_bc_rest')]",
-        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds_raw_json')]"
-      ],
-      "properties": {
-        "description": "Full extraction preserving complete REST response envelopes. Incremental checkpoints and delete capture are not implemented in this first-stage pipeline.",
-        "parameters": {
-          "companyId": {
-            "type": "String"
-          },
-          "entity": {
-            "type": "String",
-            "defaultValue": "customers"
-          },
-          "apiPath": {
-            "type": "String",
-            "defaultValue": "api/v2.0"
-          },
-          "pageSize": {
-            "type": "Int",
-            "defaultValue": 1000
-          }
-        },
-        "activities": [
-          {
-            "name": "CopyEntity",
-            "type": "Copy",
-            "policy": {
-              "timeout": "0.01:00:00",
-              "retry": 4,
-              "retryIntervalInSeconds": 30,
-              "secureInput": true,
-              "secureOutput": false
-            },
-            "typeProperties": {
-              "source": {
-                "type": "RestSource",
-                "requestMethod": "GET",
-                "httpRequestTimeout": "00:02:00",
-                "requestInterval": "00.00:00:01",
-                "additionalHeaders": {
-                  "Prefer": {
-                    "value": "@concat('odata.maxpagesize=', string(pipeline().parameters.pageSize))",
-                    "type": "Expression"
-                  }
-                },
-                "paginationRules": {
-                  "AbsoluteUrl": "$['@odata.nextLink']",
-                  "supportRFC5988": "false"
-                }
-              },
-              "sink": {
-                "type": "JsonSink",
-                "storeSettings": {
-                  "type": "AzureBlobFSWriteSettings"
-                },
-                "formatSettings": {
-                  "type": "JsonWriteSettings",
-                  "filePattern": "arrayOfObjects"
-                }
-              },
-              "enableStaging": false
-            },
-            "inputs": [
-              {
-                "referenceName": "ds_bc_rest",
-                "type": "DatasetReference",
-                "parameters": {
-                  "relativeUrl": {
-                    "value": "@concat(pipeline().parameters.apiPath, '/companies(', pipeline().parameters.companyId, ')/', pipeline().parameters.entity)",
-                    "type": "Expression"
-                  }
-                }
-              }
-            ],
-            "outputs": [
-              {
-                "referenceName": "ds_raw_json",
-                "type": "DatasetReference",
-                "parameters": {
-                  "folderPath": {
-                    "value": "@concat('business-central/', pipeline().parameters.companyId, '/', pipeline().parameters.entity, '/', formatDateTime(pipeline().TriggerTime, 'yyyy/MM/dd'), '/', pipeline().RunId)",
-                    "type": "Expression"
-                  },
-                  "fileName": "response-pages.json"
-                }
-              }
-            ]
           }
         ]
       }
@@ -511,60 +1457,83 @@
     {
       "type": "Microsoft.DataFactory/factories/pipelines",
       "apiVersion": "2018-06-01",
-      "name": "[concat(parameters('factoryName'), '/pl-extract-batch-full')]",
+      "name": "[concat(parameters('factoryName'), '/pl-read-checkpoint')]",
       "dependsOn": [
-        "[resourceId('Microsoft.DataFactory/factories/pipelines', parameters('factoryName'), 'pl-extract-entity-full')]"
+        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds_bc_checkpoints')]"
       ],
       "properties": {
-        "description": "Metadata-driven full extraction. Supply only explicitly selected companies and entities in the entities parameter.",
-        "concurrency": 1,
+        "description": "Read-only checkpoint inspection; uses the same derived key and connector-isolated partition.",
         "parameters": {
-          "entities": {
-            "type": "Array"
+          "companyId": {
+            "type": "String"
+          },
+          "entity": {
+            "type": "String",
+            "defaultValue": "customers"
+          },
+          "apiPath": {
+            "type": "String",
+            "defaultValue": "api/v2.0"
+          },
+          "pageSize": {
+            "type": "Int",
+            "defaultValue": 1000
+          }
+        },
+        "variables": {
+          "checkpointKey": {
+            "type": "String"
+          },
+          "partitionKey": {
+            "type": "String",
+            "defaultValue": "[concat(parameters('tenantId'), '|', parameters('environment'), '|rest')]"
           }
         },
         "activities": [
           {
-            "name": "ForEachEntity",
-            "type": "ForEach",
+            "name": "SetCheckpointKey",
+            "type": "SetVariable",
+            "dependsOn": [],
             "typeProperties": {
-              "items": {
-                "value": "@pipeline().parameters.entities",
+              "variableName": "checkpointKey",
+              "value": {
+                "value": "@replace(replace(replace(base64(string(createArray(pipeline().parameters.companyId, pipeline().parameters.apiPath, pipeline().parameters.entity))), '/', '_'), '+', '-'), '=', '')",
                 "type": "Expression"
+              }
+            }
+          },
+          {
+            "name": "ReadCheckpoint",
+            "type": "Lookup",
+            "dependsOn": [
+              {
+                "activity": "SetCheckpointKey",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "0.00:30:00",
+              "retry": "[parameters('copyRetries')]",
+              "retryIntervalInSeconds": "[parameters('retryIntervalSeconds')]",
+              "secureInput": true,
+              "secureOutput": false
+            },
+            "typeProperties": {
+              "source": {
+                "type": "AzureTableSource",
+                "azureTableSourceQuery": {
+                  "value": "@concat('PartitionKey eq ''', variables('partitionKey'), ''' and RowKey eq ''', variables('checkpointKey'), '''')",
+                  "type": "Expression"
+                },
+                "azureTableSourceIgnoreTableNotFound": false
               },
-              "isSequential": false,
-              "batchCount": 2,
-              "activities": [
-                {
-                  "name": "ExtractEntity",
-                  "type": "ExecutePipeline",
-                  "typeProperties": {
-                    "pipeline": {
-                      "referenceName": "pl-extract-entity-full",
-                      "type": "PipelineReference"
-                    },
-                    "waitOnCompletion": true,
-                    "parameters": {
-                      "companyId": {
-                        "value": "@item().companyId",
-                        "type": "Expression"
-                      },
-                      "entity": {
-                        "value": "@item().entity",
-                        "type": "Expression"
-                      },
-                      "apiPath": {
-                        "value": "@item().apiPath",
-                        "type": "Expression"
-                      },
-                      "pageSize": {
-                        "value": "@item().pageSize",
-                        "type": "Expression"
-                      }
-                    }
-                  }
-                }
-              ]
+              "dataset": {
+                "referenceName": "ds_bc_checkpoints",
+                "type": "DatasetReference"
+              },
+              "firstRowOnly": false
             }
           }
         ]
