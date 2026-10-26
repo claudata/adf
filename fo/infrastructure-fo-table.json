@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "storageName": { "type": "string" },
+    "factoryName": { "type": "string" }
+  },
+  "variables": {
+    "tableId": "[resourceId('Microsoft.Storage/storageAccounts/tableServices/tables', parameters('storageName'), 'default', 'FoExtractionCheckpoint')]",
+    "factoryId": "[resourceId('Microsoft.DataFactory/factories', parameters('factoryName'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts/tableServices/tables",
+      "apiVersion": "2023-05-01",
+      "name": "[concat(parameters('storageName'), '/default/FoExtractionCheckpoint')]",
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(resourceGroup().id, 'adf-fo-checkpoint-writer')]",
+      "scope": "[variables('tableId')]",
+      "dependsOn": ["[variables('tableId')]"],
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')]",
+        "principalId": "[reference(variables('factoryId'), '2018-06-01', 'Full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      }
+    }
+  ]
+}
